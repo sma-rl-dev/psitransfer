@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# PsiTransfer - Tester Environment CLI (prospect draft; moves into fork apps/psitransfer on accept)
+# Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
+# Commands: deploy, seed, verify, reset, stop, logs, status
+
+RUN_ID="default"
+PORT="8095"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTER_ENV_PROJECT="${TESTER_ENV_PROJECT:-tester-env}"
+TESTER_ENV_APP="${TESTER_ENV_APP:-psitransfer}"
+TESTER_ENV_SCENARIO="${TESTER_ENV_SCENARIO:-manual}"
+
+# Deterministic credentials / config (documented, no logins in app by default)
+ADMIN_PASS="${PSITRANSFER_ADMIN_PASS:-test-admin-123}"
+UPLOAD_PASS="${PSITRANSFER_UPLOAD_PASS:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --run-id) RUN_ID="$2"; shift 2 ;;
+    --port) PORT="$2"; shift 2 ;;
+    --ref) REF="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+CMD="${1:-help}"
+
+refresh_names() {
+  local suffix=""
+  if [[ "${RUN_ID}" != "default" ]]; then suffix="-${RUN_ID}"; fi
+  CONTAINER_NAME="tester-env-psitransfer${suffix}"
+  # IMAGE_TAG set by scripts/rl-env to a content-addressed tag; manual runs get :dev.
+  IMAGE_NAME="${IMAGE_TAG:-tester-env-psitransfer:dev}"
+  DATA_VOLUME="psitransfer-data${suffix}"
+}
+refresh_names
+
+cmd_deploy() {
+  if [[ -n "${REF:-}" ]]; then
+    echo "==> Checking out ref: ${REF}"
+    git -C "${SCRIPT_DIR}" checkout "${REF}"
+  fi
+  echo "==> Baseline: $(git -C "${SCRIPT_DIR}" rev-parse HEAD)"
+  echo "==> Building Docker image ${IMAGE_NAME} from editable source..."
+  docker build \
+    --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+    --label "tester-env.app=${TESTER_ENV_APP}" \
+    --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+    -t "${IMAGE_NAME}" \
+    "${SCRIPT_DIR}"
+  echo "==> (Re)creating container ${CONTAINER_NAME} on port ${PORT}..."
+  docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+  docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+  docker volume create \
+    --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+    --label "tester-env.app=${TESTER_ENV_APP}" \
+    --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+    --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
+    "${DATA_VOLUME}" >/dev/null || true
+  docker run -d --name "${CONTAINER_NAME}" \
+    --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+    --label "tester-env.app=${TESTER_ENV_APP}" \
+    --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+    --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
+    -p "${PORT}:3000" \
+    -v "${DATA_VOLUME}:/data" \
+    -e "PSITRANSFER_PORT=3000" \
+    -e "PSITRANSFER_ADMIN_PASS=${ADMIN_PASS}" \
+    -e "PSITRANSFER_UPLOAD_DIR=/data" \
+    ${UPLOAD_PASS:+-e "PSITRANSFER_UPLOAD_PASS=${UPLOAD_PASS}"} \
+    "${IMAGE_NAME}"
+  echo "==> Waiting for app to respond..."
+  for i in $(seq 1 30); do
+    if curl -fsS "http://localhost:${PORT}/" >/dev/null 2>&1; then
+      echo "==> Deployment complete. App running at http://localhost:${PORT}"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "==> App did not respond in time; showing logs:"
+  docker logs "${CONTAINER_NAME}" 2>&1 | tail -n 30 || true
+  return 1
+}
+
+cmd_seed() {
+  # shellcheck source=tester-env-seed.sh
+  . "${SCRIPT_DIR}/tester-env-seed.sh"
+  echo "==> Seeding deterministic buckets via tus API (see SEED.md)..."
+  seed_all "http://localhost:${PORT}"
+}
+
+cmd_verify() {
+  # shellcheck source=tester-env-seed.sh
+  . "${SCRIPT_DIR}/tester-env-seed.sh"
+  verify_all "http://localhost:${PORT}" "${ADMIN_PASS}"
+}
+
+cmd_reset() {
+  echo "==> Resetting environment (wipe data volume)..."
+  docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+  docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+  docker volume rm "${DATA_VOLUME}" 2>/dev/null || true
+  echo "==> Reset complete. Run './tester-env deploy' to start fresh."
+}
+
+cmd_stop() {
+  docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+  echo "==> Stopped ${CONTAINER_NAME}."
+}
+
+cmd_logs() {
+  docker logs -f "${CONTAINER_NAME}" 2>/dev/null || echo "Container not running."
+}
+
+cmd_status() {
+  if docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q "${CONTAINER_NAME}"; then
+    echo "Status: RUNNING"
+    echo "URL: http://localhost:${PORT}"
+    echo "Container: ${CONTAINER_NAME}"
+    echo "Image: ${IMAGE_NAME}"
+    echo "Volume: ${DATA_VOLUME}"
+  else
+    echo "Status: NOT RUNNING"
+    echo "Container: ${CONTAINER_NAME}"
+  fi
+}
+
+case "${CMD}" in
+  deploy) cmd_deploy ;;
+  seed) cmd_seed ;;
+  verify) cmd_verify ;;
+  reset) cmd_reset ;;
+  stop) cmd_stop ;;
+  logs) cmd_logs ;;
+  status) cmd_status ;;
+  help) echo "Usage: $0 <deploy|seed|verify|reset|stop|logs|status> [--run-id <id>] [--port <port>] [--ref <git-ref>]"; echo "Seed inventory (sids, passwords, files): see SEED.md"; exit 0 ;;
+  *) echo "Usage: $0 <deploy|seed|verify|reset|stop|logs|status> [--run-id <id>] [--port <port>] [--ref <git-ref>]"; echo "Seed inventory (sids, passwords, files): see SEED.md"; exit 1 ;;
+esac
