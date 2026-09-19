@@ -8,7 +8,7 @@
 
 ```bash
 ./tester-env deploy    # Build image from editable source, start container
-./tester-env seed      # Populate the 3 deterministic buckets via tus API
+./tester-env seed      # Populate the 4 deterministic buckets via tus API
 ./tester-env verify    # Assert seeded state (names/sizes/retentions/gates)
 /tester-env reset      # Stop container + wipe data volume (clean slate)
 ```
@@ -78,11 +78,12 @@ Reset removes the container and the named data volume but not the image
 
 | Bucket (sid) | Protection | Retention | Files |
 |---|---|---|---|
-| `a1b2c3d4e5f6` | open | `604800` (1 week) | `release-notes.txt`, `launch-checklist.txt` |
+| `a1b2c3d4e5f6` | open | `604800` (1 week) | `release-notes.txt`, `launch-checklist.txt`, `Grüße-Übersicht.txt` (umlaut-name case) |
 | `9f8e7d6c5b4a` | password `share-secret-7` | `86400` (1 day) | `budget-review.csv` |
 | `012345abcdef` | open | `3600` (1 hour, short-expiry case) | `one-hour-memo.txt` |
+| `b0b1b2c3d4e5` | open | `one-time` (deleted after first download) | `one-time-note.txt` |
 
-Totals: 3 buckets, 4 files. File keys are server-generated UUIDs and differ
+Totals: 4 buckets, 6 files (646 bytes, admin Sum `0.63 kB`). File keys are server-generated UUIDs and differ
 per run; assertions use names, byte sizes, and retention values only.
 Full inventory: see `SEED.md`.
 
@@ -100,3 +101,9 @@ Full inventory: see `SEED.md`.
   `/9f8e7d6c5b4a` gate unlocked by `share-secret-7`; `/012345abcdef`
   one-hour memo; `/admin` (`test-admin-123`) 3-row bucket table with lock
   icon only on the password bucket, Sum 0.43 kB.
+  NOTE (seed expansion, browser re-smoke pending): seed is now 4 buckets /
+  6 files — `/a1b2c3d4e5f6` gained `Grüße-Übersicht.txt` (128 bytes, umlaut
+  case) and new open one-time bucket `/b0b1b2c3d4e5` holds `one-time-note.txt`
+  (77 bytes, retention `one-time`); admin Sum is now `0.63 kB` (646 bytes).
+  The two admin scenarios pinning "three buckets" / `0.43 kB` need assertion
+  updates before re-validation.

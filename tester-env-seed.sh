@@ -15,8 +15,13 @@ SEED_LOCKED_RETENTION="86400"
 # Bucket 3: open, 1 file, 1-hour retention (exercises short retention/expiry metadata).
 SEED_SHORT_SID="012345abcdef"
 SEED_SHORT_RETENTION="3600"
+# Bucket 4: open, 1 file, one-time retention (single-download expiry case).
+SEED_ONETIME_SID="b0b1b2c3d4e5"
+SEED_ONETIME_RETENTION="one-time"
+# Umlaut file added to bucket 1 (keeps admin bucket count growth to +1).
+SEED_UMLAUT_NAME="Grüße-Übersicht.txt"
 
-SEED_SIDS="${SEED_OPEN_SID} ${SEED_LOCKED_SID} ${SEED_SHORT_SID}"
+SEED_SIDS="${SEED_OPEN_SID} ${SEED_LOCKED_SID} ${SEED_SHORT_SID} ${SEED_ONETIME_SID}"
 
 seed_b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
@@ -47,6 +52,15 @@ seed_stage_fixtures() {
     'Quick memo - expires in one hour.' \
     'Reviewer link for the launch assets.' \
     > "${dir}/one-hour-memo.txt"
+  printf '%s\n' \
+    'One-time note - deleted after the first download.' \
+    'Share this link only once.' \
+    > "${dir}/one-time-note.txt"
+  printf '%s\n' \
+    'Grüße aus dem Release-Team!' \
+    'Übersicht: Umlaute ä ö ü Ä Ö Ü ß bleiben erhalten.' \
+    'Preisliste: 9,99 € - Größe: 2 m².' \
+    > "${dir}/${SEED_UMLAUT_NAME}"
 }
 
 # Upload one file via the tus protocol. Args: base sid name path retention [password]
@@ -92,18 +106,22 @@ seed_all() {
   local workdir names
   workdir="$(mktemp -d)"
   seed_stage_fixtures "${workdir}"
-  # Bucket 1: open, 2 files.
+  # Bucket 1: open, 3 files (incl. umlaut filename case).
   names="$(seed_bucket_names "${base}" "${SEED_OPEN_SID}")"
   [[ "${names}" == *"release-notes.txt"* ]] || seed_tus_upload "${base}" "${SEED_OPEN_SID}" "release-notes.txt" "${workdir}/release-notes.txt" "${SEED_OPEN_RETENTION}"
   [[ "${names}" == *"launch-checklist.txt"* ]] || seed_tus_upload "${base}" "${SEED_OPEN_SID}" "launch-checklist.txt" "${workdir}/launch-checklist.txt" "${SEED_OPEN_RETENTION}"
+  printf '%s' "${names}" | grep -qF "${SEED_UMLAUT_NAME}" || seed_tus_upload "${base}" "${SEED_OPEN_SID}" "${SEED_UMLAUT_NAME}" "${workdir}/${SEED_UMLAUT_NAME}" "${SEED_OPEN_RETENTION}"
   # Bucket 2: password-protected, 1 file.
   names="$(seed_bucket_names "${base}" "${SEED_LOCKED_SID}" "${SEED_LOCKED_PASSWORD}")"
   [[ "${names}" == *"budget-review.csv"* ]] || seed_tus_upload "${base}" "${SEED_LOCKED_SID}" "budget-review.csv" "${workdir}/budget-review.csv" "${SEED_LOCKED_RETENTION}" "${SEED_LOCKED_PASSWORD}"
   # Bucket 3: open, short retention, 1 file.
   names="$(seed_bucket_names "${base}" "${SEED_SHORT_SID}")"
   [[ "${names}" == *"one-hour-memo.txt"* ]] || seed_tus_upload "${base}" "${SEED_SHORT_SID}" "one-hour-memo.txt" "${workdir}/one-hour-memo.txt" "${SEED_SHORT_RETENTION}"
+  # Bucket 4: open, one-time retention, single file (deleted after first download).
+  names="$(seed_bucket_names "${base}" "${SEED_ONETIME_SID}")"
+  [[ "${names}" == *"one-time-note.txt"* ]] || seed_tus_upload "${base}" "${SEED_ONETIME_SID}" "one-time-note.txt" "${workdir}/one-time-note.txt" "${SEED_ONETIME_RETENTION}"
   rm -rf "${workdir}"
-  echo "==> Seed complete: 3 buckets, 4 files."
+  echo "==> Seed complete: 4 buckets, 6 files."
 }
 
 # Assert seeded state. Args: base admin_pass. Returns 0 on success.
@@ -118,10 +136,10 @@ verify_all() {
   }
   echo "==> Verifying upload page..."
   check "upload page served" bash -c "curl -fsS '${base}/' | grep -qi 'psitransfer'"
-  echo "==> Verifying admin bucket list (exactly 3 seeded buckets)..."
+  echo "==> Verifying admin bucket list (exactly 4 seeded buckets)..."
   local admin
   admin="$(curl -sS -H "x-passwd: ${admin_pass}" "${base}/admin/data.json")"
-  [[ "$(printf '%s' "${admin}" | jq -r 'keys | sort | join(",")')" == "012345abcdef,9f8e7d6c5b4a,a1b2c3d4e5f6" ]] \
+  [[ "$(printf '%s' "${admin}" | jq -r 'keys | sort | join(",")')" == "012345abcdef,9f8e7d6c5b4a,a1b2c3d4e5f6,b0b1b2c3d4e5" ]] \
     && echo "  ok: bucket sids match seed" \
     || { echo "  MISSING/WRONG: bucket sids: $(printf '%s' "${admin}" | jq -c 'keys')"; fail=1; }
   echo "==> Verifying bucket contents (names, sizes, retentions)..."
@@ -139,8 +157,10 @@ verify_all() {
   done <<SPEC
 ${SEED_OPEN_SID}|${SEED_OPEN_RETENTION}|release-notes.txt
 ${SEED_OPEN_SID}|${SEED_OPEN_RETENTION}|launch-checklist.txt
+${SEED_OPEN_SID}|${SEED_OPEN_RETENTION}|${SEED_UMLAUT_NAME}
 ${SEED_LOCKED_SID}|${SEED_LOCKED_RETENTION}|budget-review.csv
 ${SEED_SHORT_SID}|${SEED_SHORT_RETENTION}|one-hour-memo.txt
+${SEED_ONETIME_SID}|${SEED_ONETIME_RETENTION}|one-time-note.txt
 SPEC
   echo "==> Verifying password gate on locked bucket..."
   check "locked bucket rejects anonymous metadata" bash -c "test \"\$(curl -sS -o /dev/null -w '%{http_code}' '${base}/${SEED_LOCKED_SID}.json')\" = 401"
@@ -149,12 +169,22 @@ SPEC
   echo "==> Verifying share pages + one file download..."
   check "open share page served" bash -c "curl -fsS '${base}/${SEED_OPEN_SID}' | grep -qi 'psitransfer'"
   check "locked share page served" bash -c "curl -fsS '${base}/${SEED_LOCKED_SID}' | grep -qi 'psitransfer'"
+  check "one-time share page served" bash -c "curl -fsS '${base}/${SEED_ONETIME_SID}' | grep -qi 'psitransfer'"
+  check "one-time file lists retention one-time" bash -c "curl -sS '${base}/${SEED_ONETIME_SID}.json' | jq -e '[.items[] | select(.metadata.name==\"one-time-note.txt\" and .metadata.retention==\"one-time\")] | length==1'"
   local key code body
   key="$(curl -sS "${base}/${SEED_SHORT_SID}.json" | jq -r '.items[0].key')"
   code="$(curl -sS -o "${workdir}/dl.txt" -w "%{http_code}" "${base}/files/${SEED_SHORT_SID}++${key}")"
   [[ "${code}" == "200" ]] && cmp -s "${workdir}/dl.txt" "${workdir}/one-hour-memo.txt" \
     && echo "  ok: single-file download byte-identical" \
     || { echo "  MISSING/WRONG: single-file download (http ${code})"; fail=1; }
+  # Umlaut file must download byte-identical (baseline for utf8 filename scenario).
+  # NOTE: downloads the umlaut file from the open bucket (weekly retention, no expiry).
+  local ukey ucode
+  ukey="$(curl -sS "${base}/${SEED_OPEN_SID}.json" | jq -r --arg n "${SEED_UMLAUT_NAME}" '.items[] | select(.metadata.name==$n) | .key')"
+  ucode="$(curl -sS -o "${workdir}/umlaut-dl.txt" -w "%{http_code}" "${base}/files/${SEED_OPEN_SID}++${ukey}")"
+  [[ "${ucode}" == "200" ]] && cmp -s "${workdir}/umlaut-dl.txt" "${workdir}/${SEED_UMLAUT_NAME}" \
+    && echo "  ok: umlaut file download byte-identical" \
+    || { echo "  MISSING/WRONG: umlaut file download (http ${ucode})"; fail=1; }
   rm -rf "${workdir}"
   if [[ "${fail}" == "0" ]]; then echo "==> Verify OK: seeded state matches."; else echo "==> Verify FAILED"; fi
   return "${fail}"

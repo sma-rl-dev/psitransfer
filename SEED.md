@@ -8,7 +8,7 @@ Deterministic seed for the `psitransfer` prospect (filesystem store on the
 ```sh
 ./tester-env reset          # wipe container + data volume (clean state)
 ./tester-env deploy         # build from source, start on http://localhost:8095
-./tester-env seed           # create the 3 fixed buckets below via the tus API (idempotent)
+./tester-env seed           # create the 4 fixed buckets below via the tus API (idempotent)
 ./tester-env verify         # assert seeded state, no junk buckets created
 ```
 
@@ -25,12 +25,14 @@ Full cycle: `reset -> deploy -> seed -> verify`. Seed definitions live in
 
 | Bucket (sid) | Protection | Retention | Files |
 |---|---|---|---|
-| `a1b2c3d4e5f6` | open | `604800` (1 Week) | `release-notes.txt`, `launch-checklist.txt` |
+| `a1b2c3d4e5f6` | open | `604800` (1 Week) | `release-notes.txt`, `launch-checklist.txt`, `Grüße-Übersicht.txt` (umlaut-name case) |
 | `9f8e7d6c5b4a` | password `share-secret-7` | `86400` (1 Day) | `budget-review.csv` |
 | `012345abcdef` | open | `3600` (1 Hour, short-expiry case) | `one-hour-memo.txt` |
+| `b0b1b2c3d4e5` | open | `one-time` (deleted after first download) | `one-time-note.txt` |
 
-Totals: 3 buckets, 4 files. File keys are server-generated UUIDs and differ
+Totals: 4 buckets, 6 files. File keys are server-generated UUIDs and differ
 per run; assertions use names, byte sizes, and retention values only.
+Admin storage total over seed: 646 bytes = `0.63 kB`.
 
 ## Browser-visible assertions
 
@@ -39,5 +41,5 @@ per run; assertions use names, byte sizes, and retention values only.
 - `/a1b2c3d4e5f6` shows 2 files with zip/tar.gz archive buttons.
 - `/9f8e7d6c5b4a` prompts for the bucket password; `share-secret-7` unlocks
   `budget-review.csv`.
-- `/admin` (header `x-passwd: test-admin-123`) lists the 3 buckets with
-  distinct expiry dates; the locked bucket shows a key icon.
+- `/admin` (header `x-passwd: test-admin-123`) lists the 4 buckets with
+  distinct expiry dates (the one-time bucket shows `one-time`); the locked bucket shows a key icon.
