@@ -5,8 +5,11 @@ set -euo pipefail
 # Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
 # Commands: deploy, seed, verify, reset, stop, logs, status
 
-RUN_ID="default"
-PORT="8095"
+# RUN_ID/PORT are set by scripts/rl-env (and exported for every CLI call) so
+# containers, volume and published port stay scoped to the owned run; manual
+# invocations without either keep the legacy global names on port 8095.
+RUN_ID="${RUN_ID:-default}"
+PORT="${PORT:-8095}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTER_ENV_PROJECT="${TESTER_ENV_PROJECT:-tester-env}"
 TESTER_ENV_APP="${TESTER_ENV_APP:-psitransfer}"
@@ -16,15 +19,17 @@ TESTER_ENV_SCENARIO="${TESTER_ENV_SCENARIO:-manual}"
 ADMIN_PASS="${PSITRANSFER_ADMIN_PASS:-test-admin-123}"
 UPLOAD_PASS="${PSITRANSFER_UPLOAD_PASS:-}"
 
+CMD=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-id) RUN_ID="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
-    *) break ;;
+    # Accept flags before or after the command; rl-env appends them after it.
+    *) if [[ -z "${CMD}" ]]; then CMD="$1"; fi; shift ;;
   esac
 done
-CMD="${1:-help}"
+CMD="${CMD:-help}"
 
 refresh_names() {
   local suffix=""
